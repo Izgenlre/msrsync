@@ -91,7 +91,7 @@ When `--delete` (or `--delete-after`, `--del`, etc.) is passed inside `--rsync`,
 
 Supported delete variants: `--delete`, `--delete-after`, `--delete-before`, `--delete-during`, `--delete-delay`, `--delete-excluded`, `--del`.
 
-### Enterprise Logging & Audit
+### Enterprise Structured Logging
 
 **`--log-file PATH`** — Writes a timestamped, structured log of the entire run:
 
@@ -289,7 +289,7 @@ make install DESTDIR=/usr/local
 
 支持的 delete 变体：`--delete`、`--delete-after`、`--delete-before`、`--delete-during`、`--delete-delay`、`--delete-excluded`、`--del`。
 
-### 企业级日志与审计
+### 企业级结构化日志
 
 **`--log-file PATH`** — 将整个运行过程写入带时间戳的结构化日志：
 

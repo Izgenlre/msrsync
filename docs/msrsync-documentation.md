@@ -15,7 +15,7 @@
 3. [Quick Start](#quick-start)
 4. [Options Reference](#options-reference)
 5. [Architecture & How It Works](#architecture--how-it-works)
-6. [Log Output & Audit](#log-output--audit)
+6. [Log Output](#log-output)
 7. [Safe --delete (Two-Phase)](#safe---delete-two-phase)
 8. [Exit Codes](#exit-codes)
 9. [Notes & Caveats](#notes--caveats)
@@ -143,7 +143,7 @@ Key design decisions:
 4. **`--from0` (null-delimited paths)** is used in all rsync invocations for robust handling of filenames with spaces and special characters.
 5. **Two-phase `--delete`** (see below) prevents concurrent rsync processes from deleting files that other processes are simultaneously transferring.
 
-### Log Output & Audit
+### Log Output
 
 msrsync provides multiple layers of logging, all designed for enterprise production environments with zero performance impact on data transfer.
 
@@ -411,7 +411,7 @@ This project includes a copy of `options.py` from the [bup](https://github.com/b
 3. [快速开始](#快速开始)
 4. [选项详解](#选项详解)
 5. [架构与工作原理](#架构与工作原理)
-6. [日志输出与审计](#日志输出与审计)
+6. [日志输出](#日志输出)
 7. [安全的 --delete（两阶段删除）](#安全的---delete两阶段删除)
 8. [退出码](#退出码)
 9. [注意事项](#注意事项)
@@ -539,7 +539,7 @@ make install DESTDIR=/usr/local
 4. **所有 rsync 调用使用 `--from0`（null 分隔路径）**，安全处理含空格和特殊字符的文件名。
 5. **两阶段 `--delete`**（见下文）防止并发 rsync 进程删除其他进程正在传输的文件。
 
-### 日志输出与审计
+### 日志输出
 
 msrsync 提供多层日志，全部为企业生产环境设计，对数据传输零性能影响。
 
