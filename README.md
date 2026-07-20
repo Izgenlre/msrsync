@@ -1,265 +1,382 @@
-This project is not actively developed. Please have a look at the alternatives in the motivation section.
+# msrsync — Multi-Stream rsync
 
-# msrsync: maximize rsync bandwidth usage
+[English](#english) | [中文](#中文)
 
-`msrsync` (multi-stream rsync) is a python wrapper around `rsync`. It only depends on `python >= 2.6` and `rsync`.
+---
 
-It will split the transfer in multiple buckets while the source is scanned and will hopefully help maximizing the usage of the available bandwidth by running a configurable number of `rsync` processes in parallel. The main limitation is it does not handle remote source or target directory, they must be locally accessible (local disk, nfs/cifs/other mountpoint). I hope to address this in a near future.
+## English
 
-## Quick example
+### Overview
 
-```bash
-$ msrsync -p 4 /source /destination # you can also use -P/--progress and --stats options
-```
+**msrsync** parallelizes `rsync` to maximize throughput for large data transfers. It splits the file tree into buckets (of configurable size and file count), then runs multiple rsync processes concurrently — each handling its own bucket. No more single-threaded rsync bottleneck on multi-terabyte datasets.
 
-This will copy /source directory in the /destination directory (same behaviour as `rsync` regarding the slash handling) using 4 `rsync` processes (using `"-aS --numeric-ids"` as default option. Could be override with `--rsync` option). `msrsync` will split the files and directory list into bucket of 1G or 1000 files maximum (see `--size` and `--files` options) before feeding them to each `rsync` process in parallel using the `--files-from` option. As long as the source and the destination can cope with the parallel I/O (think big boring "enterprise grade" NAS), it should be faster than a single `rsync`.
+Originally by [Jean-Baptiste Denis](https://github.com/jbd/msrsync). This fork adds:
 
-> `msrsync` shares the same spirit as [fpart](https://github.com/martymac/fpart) (and its [fpsync](https://github.com/martymac/fpart/blob/master/tools/fpsync) associated tool) by [Ganaël Laplanche](https://github.com/martymac) or [parsync](http://moo.nac.uci.edu/~hjm/parsync/) by [Harry Mangalam](https://github.com/hjmangalam). Those are two fantastic much more complete tools used in the field to do real work. Please check them out, they might be what you're looking for.
+- **Enterprise-grade structured logging** with timestamped, level-tagged messages (`--log-file`)
+- **Safe two-phase `--delete`** — all buckets transfer in parallel first, then a single rsync process handles orphan removal using a merged manifest, eliminating race conditions
+- **Automatic failed/deleted file tracking** with sampled summaries and full detail files
+- **Python 2.6+ / 3.x cross-compatibility**, including macOS `fork` fix for Python 3.8+
+- **Case-insensitive size suffixes** — `-s 1k` and `-s 1K` are both accepted
+- **Enhanced robustness** — monitor worker crash protection with timeout fallback, symlink-aware crawl optimization
 
-You can also check [fcp](https://github.com/olcf/pcircle) from the pcircle project. It looks very powerful. See the [associated publication](https://cug.org/proceedings/cug2016_proceedings/includes/files/pap142s2-file1.pdf).
+### Requirements
 
-## Motivation
+- **Python** 2.6+ or 3.x
+- **rsync** (GNU rsync required; macOS `openrsync` does not support `--from0`)
 
-Why write `msrsync` if tools like [fpart](https://github.com/martymac/fpart), [parsync](http://moo.nac.uci.edu/~hjm/parsync/) or [pftool](https://github.com/pftool/pftool) exist ? While reasonable, their dependencies can be a point of friction given the constraints we can have on a given system. When you're lucky, you can use your package manager ([fpart](https://github.com/martymac/fpart) seems to be well supported among various GNU/Linux and FreeBSD distribution: [FreeBSD](http://www.freshports.org/sysutils/fpart), [Debian](http://packages.debian.org/fpart), [Ubuntu](http://packages.ubuntu.com/fpart), [Archlinux](https://aur.archlinux.org/packages/fpart/), [OBS](https://build.opensuse.org/package/show/home:mgoppold/fpart)) to deal with the requirements but more often than not, I found myself struggling with the sad state of the machine I'm working with.
-
-That's why the only dependencies of msrsync are [python](https://www.python.org/) >=2.6 and [rsync](https://rsync.samba.org/). What python 2.6 ? I'm aiming RHEL6 like distribution as a minimum requirement here, so I'm stuck with python 2.6. I miss some cool features, but that's part of the project.
-
-The devil is in the details. If you need a starting point to think about data migration, this overview by Jeff Layton is very informative: [Moving Your Data – It’s Not Always Pleasant](http://www.admin-magazine.com/HPC/Articles/Moving-Your-Data-It-s-Not-Always-Pleasant).
-
-The "[How to transfer large amounts of data via network](http://moo.nac.uci.edu/~hjm/HOWTO_move_data.html)" article by `parsync` author is updated regularly and its worth a read also.
-
-If you can read french, I co-wrote an article with [Ganaël Laplanche](https://github.com/martymac) about [fpart](https://github.com/martymac/fpart) : [Parallélisez vos transferts de fichiers](http://connect.ed-diamond.com/GNU-Linux-Magazine/GLMF-164/Parallelisez-vos-transferts-de-fichiers).
-
-You might be also interested by this Intel whitepaper on data migration : [Data Migration with
-Intel® Enterprise Edition for Lustre* Software](http://www.intel.com/content/dam/www/public/us/en/documents/white-papers/data-migration-enterprise-edition-for-lustre-software-white-paper.pdf) which mentions all of those tools (but not `msrsync`).
-
-## Requirements
-
-[python](python) >= 2.6 and [rsync](https://rsync.samba.org/)
-
-## Installation
-
-`msrsync` is a single python file, you just have to download it. Or if you prefer, you can clone the repository and use the provided Makefile:
+### Quick Start
 
 ```bash
-$ wget https://raw.githubusercontent.com/jbd/msrsync/master/msrsync && chmod +x msrsync
-```
-or
-```bash
-$ git clone https://github.com/jbd/msrsync && cd msrsync && sudo make install
+# Basic: 8 parallel rsync processes
+./msrsync -p 8 /data/source/ /backup/dest/
+
+# With progress and custom rsync flags
+./msrsync -p 16 -P --rsync "-avz --numeric-ids" /data/ /backup/
+
+# Mirror sync with safe --delete (two-phase: transfer then single-process delete)
+./msrsync -p 8 --rsync "-a --delete-after" /data/ /backup/
+
+# Run self-tests
+./msrsync --selftest
+
+# Install
+make install DESTDIR=/usr/local
 ```
 
-## Usage
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-p, --processes N` | Number of parallel rsync workers | 1 |
+| `-f, --files N` | Max files per bucket | 1000 |
+| `-s, --size N` | Max size per bucket (K/M/G/T/P/E/Z/Y, case-insensitive) | 1G |
+| `-b, --buckets DIR` | Bucket files directory | auto tmpdir |
+| `-k, --keep` | Keep bucket files after run | off |
+| `-j, --show` | Print bucket directory path | off |
+| `-P, --progress` | Show real-time progress | off |
+| `--stats` | Print summary statistics | off |
+| `-d, --dry-run` | Bucket and plan, skip rsync | off |
+| `-v, --version` | Print version and exit | |
+| `-L, --log-file PATH` | Write timestamped log to PATH | off |
+| `-r, --rsync "OPTS"` | rsync options (MUST be last) | `-aS --numeric-ids` |
+| `-t, --selftest` | Run embedded tests | |
+| `-e, --bench` | Run benchmarks | |
+| `-g, --benchshm` | Benchmarks in /dev/shm | |
+
+### How It Works
 
 ```
-$ msrsync --help
-usage: msrsync [options] [--rsync "rsync-options-string"] SRCDIR [SRCDIR2...] DESTDIR
-   or: msrsync --selftest
-
-msrsync options:
-    -p, --processes ...   number of rsync processes to use [1]
-    -f, --files ...       limit buckets to <files> files number [1000]
-    -s, --size ...        limit partitions to BYTES size (1024 suffixes: K, M, G, T, P, E, Z, Y) [1G]
-    -b, --buckets ...     where to put the buckets files (default: auto temporary directory)
-    -k, --keep            do not remove buckets directory at the end
-    -j, --show            show bucket directory
-    -P, --progress        show progress
-    --stats               show additional stats
-    -d, --dry-run         do not run rsync processes
-    -v, --version         print version
-
-rsync options:
-    -r, --rsync ...       MUST be last option. rsync options as a quoted string ["-aS --numeric-ids"]. The "--from0 --files-from=... --quiet --verbose --stats --log-file=..." options will ALWAYS be added, no
-                            matter what. Be aware that this will affect all rsync *from/filter files if you want to use them. See rsync(1) manpage for details.
-
-self-test options:
-    -t, --selftest        run the integrated unit and functional tests
-    -e, --bench           run benchmarks
-    -g, --benchshm        run benchmarks in /dev/shm or the directory in $SHM environment variable
+Source Directory
+      │
+      ▼
+   crawl() ──► file list (size, path) tuples
+      │
+      ▼
+  buckets() ──► split into N buckets (by size or count)
+      │
+      ├─► Bucket 1 ──► rsync --files-from=bucket1  ──┐
+      ├─► Bucket 2 ──► rsync --files-from=bucket2  ──┤──► Destination
+      └─► Bucket N ──► rsync --files-from=bucketN  ──┘
+      │
+      ▼ (if --delete)
+  Phase 2: single rsync --delete using merged manifest
 ```
 
-If you want to use specific options for the rsync processes, use the `--rsync` option.
+### Safe `--delete` (Two-Phase)
 
-```bash
-$ msrsync -p4 --rsync "-a --numeric-ids --inplace" source destination
+When `--delete` (or `--delete-after`, `--del`, etc.) is passed inside `--rsync`, msrsync automatically:
+
+1. **Phase 1**: Strips `--delete` from bucket-level rsync commands. All files are transferred in parallel.
+2. **Phase 2**: After all workers finish, runs a **single** rsync process with `--delete` using a merged manifest built during bucketing. This avoids the race condition where concurrent `--delete` workers delete each other's files.
+
+Supported delete variants: `--delete`, `--delete-after`, `--delete-before`, `--delete-during`, `--delete-delay`, `--delete-excluded`, `--del`.
+
+### Enterprise Logging & Audit
+
+**`--log-file PATH`** — Writes a timestamped, structured log of the entire run:
+
+```
+[2026-07-20T17:30:05] [INFO] buckets directory: /tmp/msrsync-abc123
+[2026-07-20T17:30:05] [INFO] starting with 8 rsync worker(s), files per bucket=1000, size per bucket=1073741824 bytes
+[2026-07-20T17:30:17] [INFO] crawl complete: 152340 entries, 856.3 G total, 87 buckets
+[2026-07-20T17:45:32] [INFO] all rsync workers finished
+[2026-07-20T17:45:40] [INFO] delete pass complete: 0 errors
 ```
 
-Some examples:
+- `[timestamp]` — ISO 8601, reflects event time (not print time)
+- `[LEVEL]` — INFO, ERROR, or DEBUG
+- Log file is line-buffered; written from a dedicated worker process (zero impact on transfer throughput)
+- Progress lines (`[PROGRESS]`) are NOT written to the log file
+
+### Progress Output
+
+When `-P` is used, msrsync displays a live progress line:
+
 ```
-$ msrsync -p 8 /usr/share/doc/ /tmp/doc/
+[85230/152340 entries] [520.4 G/856.3 G transferred] [3520 entries/s] [3.1 G/s bw] [monq 12] [jq 5]
 ```
+
+| Field | Meaning |
+|-------|---------|
+| `entries` | Files transferred / total |
+| `transferred` | Data transferred / total |
+| `entries/s` | File throughput |
+| `bw` | Bandwidth |
+| `monq` | Monitor queue depth |
+| `jq` | Remaining job buckets |
+
+### Stats Summary
+
+When `--stats` is used, a summary is printed at the end:
+
 ```
-$ msrsync -P -p 8 /usr/share/doc/ /tmp/doc/
-[33491/33491 entries] [602.1 M/602.1 M transferred] [3378 entries/s] [60.7 M/s bw] [monq 1] [jq 1]
-```
-```
-$ msrsync -P -p 8 --stats /usr/share/doc/ /tmp/doc/
-[33491/33491 entries] [602.1 M/602.1 M transferred] [3533 entries/s] [63.5 M/s bw] [monq 1] [jq 1]
 Status: SUCCESS
-Working directory: /home/jbdenis/Code/msrsync
-Command line: ./msrsync -P -p 8 --stats /usr/share/doc/ /tmp/doc/
-Total size: 602.1 M
-Total entries: 33491
-Buckets number: 34
-Mean entries per bucket: 985
-Mean size per bucket: 17.7 M
-Entries per second: 3533
-Speed: 63.5 M/s
+Working directory: /home/user
+Command line: ./msrsync -p 8 --stats src/ dest/
+Total size: 856.3 G
+Total entries: 152340
+Buckets number: 87
+Mean entries per bucket: 1751
+Mean size per bucket: 9.8 G
+Entries per second: 3520
+Speed: 3.1 G/s
 Rsync workers: 8
-Total rsync's processes (34) cumulative runtime: 73.0s
-Crawl time: 0.4s (4.3% of total runtime)
-Total time: 9.5s
+Total rsync's processes (87) cumulative runtime: 482.5s
+Crawl time: 12.3s (1.3% of total runtime)
+Total time: 965.2s
 ```
 
-## Performance
+### Per-Bucket rsync Logs
 
-You can launch a benchmark using the `--bench` option or `make bench`. It is only for testing purpose. They are comparing the performance between vanilla `rsync` and `msrsync` using multiple options. Since I'm just creating a huge fake file tree with empty files, you won't see any `msrsync` benefits here, unless you're trying with many many files. They need to be run as root since I'm dropping disk cache between run.
-
-```
-$ sudo make bench # or sudo msrsync --bench
-Benchmarks with 100000 entries (95% of files):
-rsync -a --numeric-ids took 14.05 seconds (speedup x1)
-msrsync --processes 1 --files 1000 --size 1G took 18.58 seconds (speedup x0.76)
-msrsync --processes 2 --files 1000 --size 1G took 10.61 seconds (speedup x1.32)
-msrsync --processes 4 --files 1000 --size 1G took 6.60 seconds (speedup x2.13)
-msrsync --processes 8 --files 1000 --size 1G took 6.58 seconds (speedup x2.14)
-msrsync --processes 16 --files 1000 --size 1G took 6.66 seconds (speedup x2.11)
-```
-
-Please test on real data instead =). There is also a `--benchshm` option that will perform the benchmark in `/dev/shm`.
-
-Here is a real test on a big nas box (not known for handling small files well) on a 1G network (you'll see that is more than useless due to the I/O overhead) with the [linux 4.0.4](https://www.kernel.org/pub/linux/kernel/v4.x/linux-4.0.4.tar.xz) kernel decompressed source 21 times in different folders:
+Each rsync worker generates its own log file (controlled by rsync's `--log-file`):
 
 ```
-$ ls /mnt/nfs/linux-src/
-0  1  10  11  12  13  14  15  16  17  18  19  2  20  3  4  5  6  7  8  9
-$ du -s --apparent-size --bytes /mnt/nfs/linux-src
-11688149821     /mnt/nfs/linux-src
-$ du -s --apparent-size --human /mnt/nfs/linux-src
-11G     /mnt/nfs/linux-src
-$ find /mnt/nfs/linux-src -type f | wc -l
-1027908
-$ find /mnt/nfs/linux-src -type d | wc -l
-66360
+/tmp/msrsync-XXXXXX/0000/0000/tmpXXXXXX.log
+/tmp/msrsync-XXXXXX/0000/0001/tmpXXXXXX.log
 ```
 
-The source and the destination are on an nfs mount.
+These contain rsync's `--verbose --stats` output. Keep them with `-k`, show their location with `-j`.
 
-Let's run `rsync` and `msrsync` with a various number of process:
+### Exit Codes
 
-```
-$ rm -rf /mnt/nfs/dest
-$ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-$ time rsync -a --numeric-ids /mnt/nfs/linux-src /mnt/nfs/dest
+| Code | Meaning |
+|------|---------|
+| 0 | Success (all buckets transferred, no errors) |
+| 1 | Uncaught exception during run |
+| 10 | Python < 2.6 |
+| 11 | Bucket directory does not exist |
+| 12 | Bucket directory not writable |
+| 13 | Cannot write bucket file |
+| 14 | rsync executable not found in PATH |
+| 15 | Source is not a directory |
+| 16 | No access to source directory |
+| 17 | Destination not writable |
+| 18 | Destination is not a directory |
+| 19 | rsync options validation failed |
+| 20 | rsync timeout |
+| 21 | rsync job error |
+| 24 | Cannot create destination directory |
+| 27 | Interrupted (Ctrl+C) |
+| 28 | OS error creating bucket directory |
+| 97 | Command-line parse error |
 
-real    136m10.406s
-user    1m54.939s
-sys     7m31.188s
+### Caveats
 
-$ rm -rf /mnt/nfs/dest
-$ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-$ msrsync -p 1 /mnt/nfs/linux-src /mnt/nfs/dest
+1. **GNU rsync required.** macOS `openrsync` lacks `--from0`. Install GNU rsync via Homebrew: `brew install rsync`.
+2. **Local directories only.** Remote-shell (`user@host:/path`) is not supported for source/destination checking, though rsync options can include `-e ssh`.
+3. **Source directory only.** Wildcards like `/data/*` are not supported; use the parent directory.
+4. **No resume.** Interrupted runs must be restarted from scratch. Consider smaller bucket sizes for very large transfers to minimize re-work.
+5. **`--delete` is two-phase.** Phase 2 runs a single rsync process; for very large trees, this adds a second scan pass. The manifest approach with `--files-from` minimizes this cost.
+6. **Root required for benchmarks.** `--bench` drops buffer caches via `/proc/sys/vm/drop_caches` (Linux only).
 
-real    144m8.954s
-user    2m20.426s
-sys     8m4.127s
-
-$ rm -rf /mnt/nfs/dest
-$ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-$ msrsync -p 2 /mnt/nfs/linux-src /mnt/nfs/dest
-
-real    73m57.312s
-user    2m27.543s
-sys     7m56.484s
-
-$ rm -rf /mnt/nfs/dest
-$ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-$ msrsync -p 4 /mnt/nfs/linux-src /mnt/nfs/dest
-
-real    42m31.105s
-user    2m24.196s
-sys     7m46.568s
-
-$ rm -rf /mnt/nfs/dest
-$ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-$ msrsync -p 8 /mnt/nfs/linux-src /mnt/nfs/dest
-
-real    36m55.141s
-user    2m27.149s
-sys     7m40.392s
-
-$ rm -rf /mnt/nfs/dest
-$ echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-$ msrsync -p 16 /mnt/nfs/linux-src /mnt/nfs/dest
-
-real    33m0.976s
-user    2m35.848s
-sys     7m40.623s
-```
-
-Ridiculous rates due to the size of each file and the I/O overhead (nfs + network), but that's a real use case and we've got nice speedup without too much thinking : just use msrync and you're good to go. That's exactly what I wanted. Here is a summary of the previous
-results:
-
-| Command       |  Time      | Entries per second   | Bandwidth (MBytes/s) | Speedup |
-| --------      |:----------:|:--------------------:|:--------------------:|:-------:|
-| rsync         | 136m10s    |       133            |      1.36            |   x1    |
-| msrsync -p 1  | 144m9s     |       126            |      1.28            |   x0.94 |
-| msrsync -p 2  | 73m57s     |       246            |      2.51            |   x1.84 |
-| msrsync -p 4  | 42m31s     |       428            |      4.36            |   x3.20 |
-| msrsync -p 8  | 36m55s     |       494            |      5.03            |   x3.68 |
-| msrsync -p 16 | 33m0s      |       552            |      5.62            |   x4.12 |
-
-Astute readers will notify the slight overhead of `msrync` over the equivalent `rsync` in the single process case. This overhead vanishes (but still exists) when you increase processes number.
-
-## Notes
-
-- The `rsync` processes are always run with the `--from0 --files-from=... --quiet --verbose --stats --log-file=...` options, no matter what. `--from0` option affects `--exclude-from`, `--include-from`, `--files-from`, and any merged files specified in a `--filter` rule.
-
-- This may seem obvious but if the source or the destination of the copy cannot handle parallel I/O well, you won't see any benefits (quite the opposite in fact) using `msrsync`.
-
-## Development
-
-I'm targeting python 2.6 without external dependencies besides rsync. The provided Makefile is just an helper around the embedded testing and coverage.py:
+### Makefile Targets
 
 ```
-$ make help
-Please use `make <target>' where <target> is one of
-  clean         => clean all generated files
-  cov           => coverage report using /usr/bin/python-coverage (use COVERAGE env to change that)
-  covhtml       => coverage html report
-  man           => build manpage
-  test          => run embedded tests
-  install       => install msrsync in /usr/bin (use DESTDIR env to change that)
-  lint          => run pylint
-  bench         => run benchmarks (linux only. Need root to drop buffer cache between run)
-  benchshm      => run benchmarks using /dev/shm (linux only. Need root to drop buffer cache between run)
+make test       Run self-tests
+make install    Install to $(DESTDIR)/bin
+make lint       Run pylint
+make cov        Coverage report
+make bench      Run benchmarks (Linux, root)
+make benchshm   Benchmarks in /dev/shm (Linux, root)
+```
+
+---
+
+## 中文
+
+### 概述
+
+**msrsync** 通过并行化 `rsync` 来最大化大数据传输的吞吐量。它将文件树按可配置的大小和文件数拆分为多个桶（bucket），然后并发运行多个 rsync 进程——每个进程处理自己的桶。TB 级数据不再受单线程 rsync 的瓶颈限制。
+
+原作者：[Jean-Baptiste Denis](https://github.com/jbd/msrsync)。本分支新增功能：
+
+- **企业级结构化日志**，带时间戳和级别标签（`--log-file`）
+- **安全的两阶段 `--delete`** — 所有桶先并行传输，传输完成后由单个 rsync 进程使用合并的 manifest 文件统一处理孤儿文件删除，杜绝竞态条件
+- **自动失败/删除文件追踪**，提供采样摘要和完整详情文件
+- **Python 2.6+ / 3.x 跨版本兼容**，含 macOS Python 3.8+ 的 `fork` 修复
+- **大小写不敏感的后缀** — `-s 1k` 和 `-s 1K` 等效
+- **增强健壮性** — monitor worker 崩溃保护与超时兜底、符号链接目录遍历优化
+
+### 环境要求
+
+- **Python** 2.6+ 或 3.x
+- **rsync**（需要 GNU rsync；macOS 自带的 `openrsync` 不支持 `--from0`）
+
+### 快速开始
+
+```bash
+# 基本用法：8 个并行 rsync 进程
+./msrsync -p 8 /data/source/ /backup/dest/
+
+# 显示进度并自定义 rsync 参数
+./msrsync -p 16 -P --rsync "-avz --numeric-ids" /data/ /backup/
+
+# 镜像同步（安全的两阶段 --delete：先传输再单进程删除）
+./msrsync -p 8 --rsync "-a --delete-after" /data/ /backup/
+
+# 运行自测
+./msrsync --selftest
+
+# 安装
+make install DESTDIR=/usr/local
+```
+
+### 选项说明
+
+| 选项 | 说明 | 默认值 |
+|------|------|--------|
+| `-p, --processes N` | 并行 rsync 进程数 | 1 |
+| `-f, --files N` | 每个桶最多文件数 | 1000 |
+| `-s, --size N` | 每个桶最大大小（K/M/G/T/P/E/Z/Y，大小写不敏感） | 1G |
+| `-b, --buckets DIR` | 桶文件存放目录 | 自动临时目录 |
+| `-k, --keep` | 运行后保留桶文件 | 关闭 |
+| `-j, --show` | 打印桶目录路径 | 关闭 |
+| `-P, --progress` | 显示实时进度 | 关闭 |
+| `--stats` | 打印汇总统计 | 关闭 |
+| `-d, --dry-run` | 只分桶不执行 rsync | 关闭 |
+| `-v, --version` | 打印版本并退出 | |
+| `-L, --log-file PATH` | 将带时间戳的日志写入 PATH | 关闭 |
+| `-r, --rsync "OPTS"` | rsync 选项（必须放在最后） | `-aS --numeric-ids` |
+| `-t, --selftest` | 运行内置测试 | |
+| `-e, --bench` | 运行基准测试 | |
+| `-g, --benchshm` | 在 /dev/shm 中运行基准测试 | |
+
+### 工作原理
 
 ```
-There is an integrated test suite (`--selftest` option, or `make test`). Since I'm using unittest from python 2.6 library, I cannot capture the output of the tests (buffer parameter from TestResult object appeared in 2.7).
+源目录
+      │
+      ▼
+   crawl() ──► 文件列表 (大小, 路径) 元组
+      │
+      ▼
+  buckets() ──► 拆分为 N 个桶（按大小或文件数）
+      │
+      ├─► 桶1 ──► rsync --files-from=桶1 ──┐
+      ├─► 桶2 ──► rsync --files-from=桶2 ──┤──► 目标目录
+      └─► 桶N ──► rsync --files-from=桶N ──┘
+      │
+      ▼ (如果启用 --delete)
+  Phase 2: 单进程 rsync --delete（使用合并的 manifest）
+```
+
+### 安全的 `--delete`（两阶段）
+
+当在 `--rsync` 中传入 `--delete`（或其变体如 `--delete-after`、`--del` 等）时，msrsync 自动执行：
+
+1. **阶段一**：从桶级 rsync 命令中剥离 `--delete`。所有文件并行传输。
+2. **阶段二**：所有 worker 完成后，使用在分桶阶段构建的 manifest 文件，运行**单个** rsync 进程执行 `--delete`。这避免了并发 `--delete` worker 互相删除对方文件的竞态条件。
+
+支持的 delete 变体：`--delete`、`--delete-after`、`--delete-before`、`--delete-during`、`--delete-delay`、`--delete-excluded`、`--del`。
+
+### 企业级日志与审计
+
+**`--log-file PATH`** — 将整个运行过程写入带时间戳的结构化日志：
 
 ```
-$ make test # or msrsync --selftest
-test_get_human_size (__main__.TestHelpers)
-convert bytes to human readable string ... ok
-test_get_human_size2 (__main__.TestHelpers)
-convert bytes to human readable string ... ok
-test_human_size (__main__.TestHelpers)
-convert human readable size to bytes ... ok
-...
-test simple msrsync synchronisation ... ok
-test_msrsync_cli_2_processes (__main__.TestSyncCLI)
-test simple msrsync synchronisation ... ok
-test_msrsync_cli_4_processes (__main__.TestSyncCLI)
-test simple msrsync synchronisation ... ok
-test_msrsync_cli_8_processes (__main__.TestSyncCLI)
-test simple msrsync synchronisation ... ok
-test_simple_msrsync_cli (__main__.TestSyncCLI)
-test simple msrsync synchronisation ... ok
-test_simple_rsync (__main__.TestSyncCLI)
-test simple rsync synchronisation ... ok
+[2026-07-20T17:30:05] [INFO] buckets directory: /tmp/msrsync-abc123
+[2026-07-20T17:30:05] [INFO] starting with 8 rsync worker(s), files per bucket=1000, size per bucket=1073741824 bytes
+[2026-07-20T17:30:17] [INFO] crawl complete: 152340 entries, 856.3 G total, 87 buckets
+[2026-07-20T17:45:32] [INFO] all rsync workers finished
+[2026-07-20T17:45:40] [INFO] delete pass complete: 0 errors
+```
 
-----------------------------------------------------------------------
-Ran 29 tests in 3.320s
+- `[时间戳]` — ISO 8601 格式，反映事件发生时间（而非打印时间）
+- `[级别]` — INFO、ERROR 或 DEBUG
+- 日志文件使用行缓冲；由独立的消息进程写入（对传输吞吐零影响）
+- 进度行（`[PROGRESS]`）不会写入日志文件
 
-OK
+### 进度输出
+
+使用 `-P` 时，msrsync 显示实时进度行：
+
+```
+[85230/152340 entries] [520.4 G/856.3 G transferred] [3520 entries/s] [3.1 G/s bw] [monq 12] [jq 5]
+```
+
+| 字段 | 含义 |
+|------|------|
+| `entries` | 已传输 / 总文件数 |
+| `transferred` | 已传输 / 总数据量 |
+| `entries/s` | 文件处理速率 |
+| `bw` | 带宽 |
+| `monq` | monitor 队列深度（待处理结果数） |
+| `jq` | 剩余作业桶数 |
+
+### 统计汇总
+
+使用 `--stats` 时，运行结束后打印汇总（格式见 English 部分）。
+
+### 每个桶的 rsync 日志
+
+每个 rsync worker 生成独立的日志文件（由 rsync 的 `--log-file` 控制）：
+
+```
+/tmp/msrsync-XXXXXX/0000/0000/tmpXXXXXX.log
+/tmp/msrsync-XXXXXX/0000/0001/tmpXXXXXX.log
+```
+
+包含 rsync 的 `--verbose --stats` 输出。使用 `-k` 保留，`-j` 查看路径。
+
+### 退出码
+
+| 码 | 含义 |
+|----|------|
+| 0 | 成功 |
+| 1 | 未捕获的异常 |
+| 10 | Python < 2.6 |
+| 11 | 桶目录不存在 |
+| 12 | 桶目录不可写 |
+| 13 | 无法写入桶文件 |
+| 14 | PATH 中找不到 rsync |
+| 15 | 源不是目录 |
+| 16 | 无源目录访问权限 |
+| 17 | 目标不可写 |
+| 18 | 目标不是目录 |
+| 19 | rsync 选项校验失败 |
+| 20 | rsync 超时 |
+| 21 | rsync 任务错误 |
+| 24 | 无法创建目标目录 |
+| 27 | 中断 (Ctrl+C) |
+| 28 | 创建桶目录时 OS 错误 |
+| 97 | 命令行解析错误 |
+
+### 注意事项
+
+1. **需要 GNU rsync。** macOS 的 `openrsync` 缺少 `--from0`。通过 Homebrew 安装：`brew install rsync`。
+2. **仅支持本地目录。** 远程 shell（`user@host:/path`）不支持源/目标检查，但 rsync 选项可以包含 `-e ssh`。
+3. **仅支持目录作为源。** 通配符如 `/data/*` 不支持；使用父目录。
+4. **不支持断点续传。** 中断后需从头开始。对于超大传输，建议使用较小的桶以最小化重传。
+5. **`--delete` 是两阶段的。** 阶段二运行单个 rsync 进程；对于超大目录树，会额外增加一次扫描。Manifest + `--files-from` 方案已最小化此开销。
+6. **基准测试需要 root。** `--bench` 通过 `/proc/sys/vm/drop_caches` 清除缓存（仅 Linux）。
+
+### Makefile 目标
+
+```
+make test       运行自测
+make install    安装到 $(DESTDIR)/bin
+make lint       运行 pylint
+make cov        覆盖率报告
+make bench      运行基准测试（Linux，root）
+make benchshm   在 /dev/shm 中运行基准测试（Linux，root）
 ```
